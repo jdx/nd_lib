@@ -16,8 +16,8 @@ pub struct Package {
 
 impl Package {
     pub fn load<P: AsRef<Path>>(path: P) -> Package {
-        let path = path.as_ref().join("package.json");
-        let file = File::open(path).unwrap();
+        let path = path.as_ref();
+        let file = File::open(path.join("package.json")).unwrap();
         let package: Package = serde_json::from_reader(file).unwrap();
 
         package
@@ -57,9 +57,28 @@ impl PackageLock {
     }
 }
 
+#[derive(Debug)]
+pub enum Issue {
+    MissingPackageFromLock {package: String},
+}
+
+pub fn validate_package_lock(package: Package, lock: PackageLock) -> Vec<Issue> {
+    let mut issues = vec![];
+    let deps = package.dependencies.unwrap_or(HashMap::new());
+    let lock_deps = lock.dependencies.unwrap_or(HashMap::new());
+    for (name, _version) in deps {
+        if lock_deps.get(&name).is_none() {
+            issues.push(Issue::MissingPackageFromLock{package: name.clone()});
+        }
+    }
+
+    issues
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn loads_package() {
         let p = Package::load("fixtures/example");
@@ -79,5 +98,20 @@ mod tests {
             p.dependencies.unwrap().get("ansi-regex").unwrap().version,
             "3.0.0"
         );
+    }
+    #[test]
+    fn finds_missing_deps_from_lock() {
+        let p = Package::load("fixtures/missing-dep-from-lock");
+        let l = PackageLock::load("fixtures/missing-dep-from-lock");
+        let issues = validate_package_lock(p, l);
+        assert_matches!(issues[0], Issue::MissingPackageFromLock{..});
+        assert_eq!(issues.len(), 1);
+    }
+    #[test]
+    fn does_not_error_if_no_deps() {
+        let p = Package::load("fixtures/no_deps");
+        let l = PackageLock::load("fixtures/no_deps");
+        let issues = validate_package_lock(p, l);
+        assert_eq!(issues.len(), 0);
     }
 }

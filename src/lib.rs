@@ -5,3 +5,7 @@ extern crate serde_json;
 extern crate serde_derive;
 
 pub mod package;
+
+#[cfg(test)]
+#[macro_use]
+extern crate matches;
