@@ -37,9 +37,21 @@ impl Package {
             let mut issues = vec![];
             let empty = HashMap::new();
             let deps = package.dependencies.as_ref().unwrap_or(&empty);
-            for name in deps.keys() {
+            for (name, version) in deps {
                 let mut node_issues: Vec<Issue> = match node.get(&name) {
-                    Some(dep_node) => validate_package(&node.package, &dep_node.clone()),
+                    Some(dep_node) => {
+                        let dep_node = &dep_node.clone();
+                        let expected_version = version.clone();
+                        let actual_version = dep_node.package.version.clone();
+                        if expected_version != actual_version {
+                            return vec![Issue::WrongVersionInstalled{
+                                package: name.clone(),
+                                expected_version,
+                                actual_version,
+                            }]
+                        }
+                        validate_package(&node.package, dep_node)
+                    },
                     None => vec![Issue::PackageNotInstalled {
                         package: name.clone(),
                     }],
@@ -119,6 +131,7 @@ impl PackageLock {
 pub enum Issue {
     MissingPackageFromLock { package: String },
     PackageNotInstalled { package: String },
+    WrongVersionInstalled { package: String, expected_version: String, actual_version: String },
 }
 
 struct PackageTree {
@@ -264,6 +277,20 @@ mod tests {
         let issues = p.validate();
         match &issues[0] {
             Issue::PackageNotInstalled { ref package } => assert_eq!(package, "edon-test-c"),
+            _ => panic!("invalid issue"),
+        }
+        assert_eq!(issues.len(), 1);
+    }
+    #[test]
+    fn wrong_package_installed_1() {
+        let p = Package::load("fixtures/1-wrong-package-version-installed");
+        let issues = p.validate();
+        match &issues[0] {
+            Issue::WrongVersionInstalled{ ref package, ref expected_version, ref actual_version } => {
+                assert_eq!(package, "edon-test-c");
+                assert_eq!(expected_version, "0.0.0");
+                assert_eq!(actual_version, "0.0.1");
+            }
             _ => panic!("invalid issue"),
         }
         assert_eq!(issues.len(), 1);
