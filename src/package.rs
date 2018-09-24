@@ -2,6 +2,7 @@ extern crate serde_json;
 
 use std::collections::HashMap;
 use std::convert::AsRef;
+use std::fs;
 use std::fs::File;
 use std::path::Path;
 
@@ -17,6 +18,7 @@ pub struct Package {
 impl Package {
     pub fn load<P: AsRef<Path>>(path: P) -> Package {
         let path = path.as_ref();
+        println!("loading {:?}", path);
         let file = File::open(path.join("package.json")).unwrap();
         let package: Package = serde_json::from_reader(file).unwrap();
 
@@ -59,16 +61,58 @@ impl PackageLock {
 
 #[derive(Debug)]
 pub enum Issue {
-    MissingPackageFromLock {package: String},
+    MissingPackageFromLock { package: String },
+    PackageNotInstalled { package: String },
 }
 
-pub fn validate_package_lock(package: Package, lock: PackageLock) -> Vec<Issue> {
+pub fn validate_package(package: &Package) -> Vec<Issue> {
     let mut issues = vec![];
-    let deps = package.dependencies.unwrap_or(HashMap::new());
-    let lock_deps = lock.dependencies.unwrap_or(HashMap::new());
+    let empty = HashMap::new();
+    let deps = package.dependencies.as_ref().unwrap_or(&empty);
+    for (name, _version) in deps {}
+
+    issues
+}
+
+struct PackageTree {
+    package: Package,
+    children: HashMap<String, PackageTree>,
+}
+
+fn package_file_tree<P: AsRef<Path>>(root: P) -> PackageTree {
+    let root = root.as_ref();
+    let package = Package::load(root);
+    let mut children: HashMap<String, PackageTree> = HashMap::new();
+    let files = match fs::read_dir(root.join("node_modules")) {
+        Ok(files) => files.collect(),
+        Err(_) => vec![],
+    };
+    for file in files {
+        let path = file.unwrap().path();
+        if ! path.is_dir() {
+            continue;
+        }
+        children.insert(path.file_name().unwrap().to_str().unwrap().clone().to_string(), package_file_tree(path));
+    }
+
+    PackageTree{
+        package,
+        children,
+    }
+}
+
+pub fn validate_package_lock(package: &Package, lock: &PackageLock) -> Vec<Issue> {
+    let mut issues = validate_package(package);
+    // let deps = package.dependencies.unwrap_or(HashMap::new());
+    let empty = HashMap::new();
+    let empty2 = HashMap::new();
+    let deps = package.dependencies.as_ref().unwrap_or(&empty);
+    let lock_deps = lock.dependencies.as_ref().unwrap_or(&empty2);
     for (name, _version) in deps {
-        if lock_deps.get(&name).is_none() {
-            issues.push(Issue::MissingPackageFromLock{package: name.clone()});
+        if lock_deps.get(name).is_none() {
+            issues.push(Issue::MissingPackageFromLock {
+                package: name.clone(),
+            });
         }
     }
 
@@ -85,8 +129,8 @@ mod tests {
         assert_eq!(p.name, "example");
         assert_eq!(p.version, "0.0.0");
         assert_eq!(
-            p.dependencies.unwrap().get("@oclif/errors").unwrap(),
-            "^1.2.1"
+            p.dependencies.unwrap().get("edon-test-a").unwrap(),
+            "0.0.1"
         );
     }
     #[test]
@@ -95,23 +139,43 @@ mod tests {
         assert_eq!(p.name, "example");
         assert_eq!(p.version, "0.0.0");
         assert_eq!(
-            p.dependencies.unwrap().get("ansi-regex").unwrap().version,
-            "3.0.0"
+            p.dependencies.unwrap().get("edon-test-a").unwrap().version,
+            "0.0.1"
         );
     }
     #[test]
     fn finds_missing_deps_from_lock() {
         let p = Package::load("fixtures/missing-dep-from-lock");
         let l = PackageLock::load("fixtures/missing-dep-from-lock");
-        let issues = validate_package_lock(p, l);
-        assert_matches!(issues[0], Issue::MissingPackageFromLock{..});
+        let issues = validate_package_lock(&p, &l);
         assert_eq!(issues.len(), 1);
+        match &issues[0] {
+            Issue::MissingPackageFromLock { ref package } => assert_eq!(package, "@oclif/errors"),
+            _ => panic!("invalid issue"),
+        }
     }
     #[test]
     fn does_not_error_if_no_deps() {
         let p = Package::load("fixtures/no_deps");
         let l = PackageLock::load("fixtures/no_deps");
-        let issues = validate_package_lock(p, l);
+        let issues = validate_package_lock(&p, &l);
         assert_eq!(issues.len(), 0);
     }
+    #[test]
+    fn test_package_file_tree() {
+        let tree = package_file_tree("fixtures/example");
+        assert_eq!(tree.package.name, "example");
+        assert_eq!(tree.children.get("edon-test-a").unwrap().package.name, "edon-test-a");
+        assert_eq!(tree.children.get("edon-test-a").unwrap().package.version, "0.0.1");
+    }
+    // #[test]
+    // fn dep_not_installed() {
+    //     let p = Package::load("fixtures/dep-not-installed");
+    //     let issues = validate_package(p, l);
+    //     assert_eq!(issues.len(), 1);
+    //     match &issues[0] {
+    //         Issue::PackageNotInstalled{ref package} => assert_eq!(package, "@oclif/errors"),
+    //         _ => panic!("invalid issue"),
+    //     }
+    // }
 }

@@ -1,0 +1,8 @@
+{
+  "name": "edon-test-a",
+  "version": "0.0.1",
+  "dependencies": {
+    "edon-test-b": "0.0.1",
+    "edon-test-c": "0.0.0"
+  }
+}
