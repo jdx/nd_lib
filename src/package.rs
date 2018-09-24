@@ -128,7 +128,7 @@ struct PackageTree {
 }
 
 impl PackageTree {
-    fn get(&self, name: &String) -> Option<Rc<PackageTree>> {
+    fn get(&self, name: &str) -> Option<Rc<PackageTree>> {
         debug!("{:?}", name);
         let children = self.children.borrow();
         for (child_name, node) in children.iter() {
@@ -164,7 +164,7 @@ fn package_file_tree<P: AsRef<Path>>(root: P) -> Rc<PackageTree> {
             .map(|f| f.unwrap().path())
             .filter(|f| f.is_dir())
             .map(|d| {
-                if d.file_name().unwrap().to_str().unwrap().starts_with("@") {
+                if d.file_name().unwrap().to_str().unwrap().starts_with('@') {
                     fs::read_dir(d)
                         .unwrap()
                         .into_iter()
