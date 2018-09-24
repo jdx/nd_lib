@@ -33,13 +33,13 @@ impl Package {
     }
 
     pub fn validate(&self) -> Vec<Issue> {
-        fn validate_package(package: &Package, node: Rc<PackageTree>) -> Vec<Issue> {
+        fn validate_package(package: &Package, node: &Rc<PackageTree>) -> Vec<Issue> {
             let mut issues = vec![];
             let empty = HashMap::new();
             let deps = package.dependencies.as_ref().unwrap_or(&empty);
-            for (name, _version) in deps {
+            for name in deps.keys() {
                 let mut node_issues: Vec<Issue> = match node.get(&name) {
-                    Some(dep_node) => validate_package(&node.package, dep_node.clone()),
+                    Some(dep_node) => validate_package(&node.package, &dep_node.clone()),
                     None => vec![Issue::PackageNotInstalled {
                         package: name.clone(),
                     }],
@@ -50,14 +50,14 @@ impl Package {
             issues
         }
 
-        fn validate_package_lock(node: Rc<PackageTree>, lock: &PackageLock) -> Vec<Issue> {
+        fn validate_package_lock(node: &Rc<PackageTree>, lock: &PackageLock) -> Vec<Issue> {
             let mut issues = vec![];
             // let deps = package.dependencies.unwrap_or(HashMap::new());
             let empty = HashMap::new();
             let empty2 = HashMap::new();
             let deps = node.package.dependencies.as_ref().unwrap_or(&empty);
             let lock_deps = lock.dependencies.as_ref().unwrap_or(&empty2);
-            for (name, _version) in deps {
+            for name in deps.keys() {
                 issues.append(&mut match lock_deps.get(name) {
                     Some(_) => vec![],
                     None => vec![Issue::MissingPackageFromLock {
@@ -66,7 +66,7 @@ impl Package {
                 });
             }
             for (_name, child) in node.children.borrow().iter() {
-                issues.append(&mut validate_package_lock(child.clone(), lock));
+                issues.append(&mut validate_package_lock(&child.clone(), lock));
             }
 
             issues
@@ -75,8 +75,8 @@ impl Package {
         let root = package_file_tree(self.root.as_ref().unwrap());
         let lock = PackageLock::load(self.root.as_ref().unwrap());
 
-        let mut issues = validate_package(self, root.clone());
-        issues.append(&mut validate_package_lock(root.clone(), &lock));
+        let mut issues = validate_package(self, &root);
+        issues.append(&mut validate_package_lock(&root, &lock));
 
         issues
     }
