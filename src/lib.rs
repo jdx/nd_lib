@@ -17,7 +17,7 @@ use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-mod refresh;
+mod cache;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,7 +113,7 @@ impl Package {
     }
 
     pub fn refresh(&self) {
-        refresh::refresh(self);
+        // refresh::refresh(self);
         // let issues = self.validate();
         // for issue in issues {
         //     match issue {
@@ -348,12 +348,12 @@ mod tests {
         }
         assert_eq!(issues.len(), 1);
     }
-    #[test]
-    fn refresh() {
-        fs::remove_dir_all("fixtures/3-dep-not-installed/node_modules").unwrap_or(());
-        let p = Package::load("fixtures/3-dep-not-installed");
-        p.refresh();
-        fs::read_to_string("fixtures/3-dep-not-installed/node_modules/edon-test-c/package.json").unwrap();
-        fs::remove_dir_all("fixtures/3-dep-not-installed/node_modules").unwrap_or(());
-    }
+    // #[test]
+    // fn refresh() {
+    //     fs::remove_dir_all("fixtures/3-dep-not-installed/node_modules").unwrap_or(());
+    //     let p = Package::load("fixtures/3-dep-not-installed");
+    //     p.refresh();
+    //     fs::read_to_string("fixtures/3-dep-not-installed/node_modules/edon-test-c/package.json").unwrap();
+    //     fs::remove_dir_all("fixtures/3-dep-not-installed/node_modules").unwrap_or(());
+    // }
 }
