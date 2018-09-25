@@ -8,6 +8,7 @@ use reqwest;
 use serde_json;
 use std::collections::HashMap;
 use Package;
+use std::path::PathBuf;
 
 #[derive(Deserialize)]
 struct RegistryPackage {
@@ -37,7 +38,7 @@ pub fn refresh(pkg: &Package) {
         let metadata = get_metadata(name);
         let version = get_actual_version(&metadata, semver_range);
         let m_version = &metadata.versions[&version];
-        extract_tarball(&m_version.dist.tarball, root, "tmp")
+        extract_tarball(&m_version.dist.tarball, root, PathBuf::from("tmp").join(name).join(version))
     });
 }
 
@@ -66,10 +67,22 @@ fn get_actual_version(metadata: &RegistryPackage, semver_range: &str) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
     #[test]
     fn test_get_actual_version() {
         let metadata = get_metadata("edon-test-c");
         let version = get_actual_version(&metadata, "^1.0.0");
         assert_eq!(version, "1.0.4");
+    }
+    #[test]
+    fn test_installs_subdeps_4() {
+        let t = PathBuf::from("fixtures/4-installs-subdeps");
+        fs::remove_dir_all(t.join("node_modules")).unwrap_or(());
+        let p = Package::load(&t);
+        p.refresh();
+        assert_eq!(Package::load(&t.join("node_modules/edon-test-c")).version, "1.0.4");
+        assert_eq!(Package::load(&t.join("node_modules/edon-test-a")).version, "0.0.1");
+        // assert_eq!(Package::load(&t.join("node_modules/edon-test-a/node_modules/edon-test-c")).version, "0.0.0");
     }
 }
