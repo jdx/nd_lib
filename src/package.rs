@@ -31,16 +31,15 @@ impl Package {
     }
 
     pub fn validate(&self) -> Vec<Issue> {
-        fn validate_package(root: &PackageTree, package: &Package, at: Vec<&String>) -> Vec<Issue> {
+        fn validate_package(root: &PackageTree, package: &Package, at: &[&String]) -> Vec<Issue> {
             let mut issues = vec![];
             let empty = HashMap::new();
             let deps = package.dependencies.as_ref().unwrap_or(&empty);
             for (name, version) in deps {
-                let mut next = at.clone();
+                let mut next = at.to_owned();
                 next.push(&name);
                 let mut node_issues: Vec<Issue> = match root.get(&name, &next) {
                     Some(dep_node) => {
-                        let dep_node = &dep_node.clone();
                         let expected_version = version.clone();
                         let actual_version = dep_node.package.version.clone();
                         if expected_version != actual_version {
@@ -50,7 +49,7 @@ impl Package {
                                 actual_version,
                             }];
                         }
-                        validate_package(root, &dep_node.package, next)
+                        validate_package(root, &dep_node.package, &next)
                     }
                     None => vec![Issue::PackageNotInstalled {
                         package: name.clone(),
@@ -66,20 +65,20 @@ impl Package {
             root: &PackageTree,
             lock: &PackageLock,
             pkg: &Package,
-            at: Vec<&String>,
+            at: &[&String],
         ) -> Vec<Issue> {
             let mut issues = vec![];
             let empty = HashMap::new();
             let deps = pkg.dependencies.as_ref().unwrap_or(&empty);
 
-            for (name, _version) in deps {
+            for name in deps.keys() {
                 issues.append(&mut match root.get(name, &at) {
                     Some(node) => match lock.get(&name, &at) {
                         Some(_dep) => {
-                            let mut next = at.clone();
+                            let mut next = at.to_vec();
                             next.push(&name);
 
-                            validate_package_lock(root, lock, &node.package, next.clone())
+                            validate_package_lock(root, lock, &node.package, &next)
                         }
                         None => vec![Issue::MissingPackageFromLock {
                             package: name.clone(),
@@ -95,8 +94,8 @@ impl Package {
         let lock = PackageLock::load(self.root.as_ref().unwrap());
         let root = package_file_tree(self.root.as_ref().unwrap());
 
-        let mut issues = validate_package(&root, self, vec![]);
-        issues.append(&mut validate_package_lock(&root, &lock, &self, vec![]));
+        let mut issues = validate_package(&root, self, &[]);
+        issues.append(&mut validate_package_lock(&root, &lock, &self, &[]));
 
         issues
     }
@@ -134,7 +133,7 @@ impl PackageLock {
         package
     }
 
-    fn get(&self, name: &String, at: &Vec<&String>) -> Option<&PackageLockDependency> {
+    fn get(&self, name: &str, at: &[&String]) -> Option<&PackageLockDependency> {
         match &self.dependencies {
             Some(deps) => find_lock_dependency(&deps, name, &at),
             None => None,
@@ -144,18 +143,16 @@ impl PackageLock {
 
 fn find_lock_dependency<'a>(
     deps: &'a HashMap<String, PackageLockDependency>,
-    name: &String,
-    at: &Vec<&String>,
+    name: &str,
+    at: &[&String],
 ) -> Option<&'a PackageLockDependency> {
-    if at.len() > 0 {
+    if ! at.is_empty() {
         let next = at[0];
         let at = &at[1..].to_vec();
-        match deps.get(next) {
-            Some(lock) => match &lock.dependencies {
-                Some(deps) => return find_lock_dependency(deps, name, at),
-                None => (),
-            },
-            None => (),
+        if let Some(lock) = deps.get(next) {
+            if let Some(deps) = &lock.dependencies {
+                return find_lock_dependency(deps, name, at)
+            }
         }
     }
 
@@ -183,16 +180,14 @@ struct PackageTree {
 }
 
 impl PackageTree {
-    fn get(&self, name: &str, at: &Vec<&String>) -> Option<&PackageTree> {
-        if at.len() > 0 {
+    fn get(&self, name: &str, at: &[&String]) -> Option<&PackageTree> {
+        if ! at.is_empty() {
             let next = at[0];
             let at = &at[1..].to_vec();
-            match self.children.get(next) {
-                Some(child) => match child.get(name, at) {
-                    Some(node) => return Some(node),
-                    None => (),
-                },
-                None => (),
+            if let Some(child) = self.children.get(next) {
+                if let Some(node) = child.get(name, at) {
+                    return Some(node);
+                }
             }
         }
 
@@ -286,19 +281,11 @@ mod tests {
         let tree = package_file_tree("fixtures/example");
         assert_eq!(tree.package.name, "example");
         assert_eq!(
-            tree.children
-                .get("edon-test-a")
-                .unwrap()
-                .package
-                .name,
+            tree.children.get("edon-test-a").unwrap().package.name,
             "edon-test-a"
         );
         assert_eq!(
-            tree.children
-                .get("edon-test-a")
-                .unwrap()
-                .package
-                .version,
+            tree.children.get("edon-test-a").unwrap().package.version,
             "0.0.1"
         );
     }
@@ -307,7 +294,11 @@ mod tests {
         let p = Package::load("fixtures/1-wrong-package-version-installed");
         let issues = p.validate();
         match &issues[0] {
-            Issue::WrongVersionInstalled{ ref package, ref expected_version, ref actual_version } => {
+            Issue::WrongVersionInstalled {
+                ref package,
+                ref expected_version,
+                ref actual_version,
+            } => {
                 assert_eq!(package, "edon-test-c");
                 assert_eq!(expected_version, "0.0.0");
                 assert_eq!(actual_version, "0.0.1");
