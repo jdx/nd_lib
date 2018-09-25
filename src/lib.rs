@@ -11,13 +11,15 @@ extern crate serde_derive;
 #[macro_use]
 extern crate log;
 
+mod cache;
+mod refresh;
+
 use std::collections::HashMap;
 use std::convert::AsRef;
 use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-
-mod cache;
+use refresh::refresh;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,9 +52,9 @@ impl Package {
             for (name, version) in deps {
                 let mut next = at.to_owned();
                 next.push(&name);
+                let expected_version = version.clone();
                 let mut node_issues: Vec<Issue> = match root.get(&name, &next) {
                     Some(dep_node) => {
-                        let expected_version = version.clone();
                         let actual_version = dep_node.package.version.clone();
                         if expected_version != actual_version {
                             return vec![Issue::WrongVersionInstalled {
@@ -65,6 +67,7 @@ impl Package {
                     }
                     None => vec![Issue::PackageNotInstalled {
                         package: name.clone(),
+                        version: expected_version,
                     }],
                 };
                 issues.append(&mut node_issues);
@@ -113,12 +116,12 @@ impl Package {
     }
 
     pub fn refresh(&self) {
-        // refresh::refresh(self);
+        refresh(&self);
         // let issues = self.validate();
         // for issue in issues {
         //     match issue {
-        //         Issue::PackageNotInstalled{ref package, ..} => {
-        //             println!("FOO");
+        //         Issue::PackageNotInstalled{ref package, ref version} => {
+        //             cache::extract("tmp/foo", package, version);
         //         },
         //         other => warn!("{:?}", other)
         //     }
@@ -191,6 +194,7 @@ pub enum Issue {
     },
     PackageNotInstalled {
         package: String,
+        version: String,
     },
     WrongVersionInstalled {
         package: String,
@@ -343,17 +347,21 @@ mod tests {
         let p = Package::load("fixtures/3-dep-not-installed");
         let issues = p.validate();
         match &issues[0] {
-            Issue::PackageNotInstalled { ref package } => assert_eq!(package, "edon-test-c"),
+            Issue::PackageNotInstalled { ref package, ref version } => {
+                assert_eq!(package, "edon-test-c");
+                assert_eq!(version, "^1.0.0");
+            }
             _ => panic!("invalid issue"),
         }
         assert_eq!(issues.len(), 1);
     }
-    // #[test]
-    // fn refresh() {
-    //     fs::remove_dir_all("fixtures/3-dep-not-installed/node_modules").unwrap_or(());
-    //     let p = Package::load("fixtures/3-dep-not-installed");
-    //     p.refresh();
-    //     fs::read_to_string("fixtures/3-dep-not-installed/node_modules/edon-test-c/package.json").unwrap();
-    //     fs::remove_dir_all("fixtures/3-dep-not-installed/node_modules").unwrap_or(());
-    // }
+    #[test]
+    fn test_refresh() {
+        fs::remove_dir_all("fixtures/3-dep-not-installed/node_modules").unwrap_or(());
+        let p = Package::load("fixtures/3-dep-not-installed");
+        p.refresh();
+        let pjson = Package::load("fixtures/3-dep-not-installed/node_modules/edon-test-c");
+        assert_eq!(pjson.version, "1.0.4");
+        fs::remove_dir_all("fixtures/3-dep-not-installed/node_modules").unwrap_or(());
+    }
 }

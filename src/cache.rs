@@ -10,16 +10,17 @@ use std::io;
 use std::path::{Path, PathBuf};
 use tar::Archive;
 
-pub fn extract<P: AsRef<Path>>(p: P, name: &str, version: &str) {
-    let c = cache(name, version);
-    clonedir(c, p);
+pub fn extract_tarball<P: AsRef<Path>, Q: AsRef<Path>>(url: &str, cache: P, to: Q) {
+    extract_tarball_raw(&url, &cache);
+    clonedir(&cache, &to).unwrap();
 }
 
-fn cache(name: &str, version: &str) -> PathBuf {
+fn extract_tarball_raw<P: AsRef<Path>>(url: &str, to: P) {
     fn get_real_path(parent: &Path, child: &Path) -> PathBuf {
-        let child = match child.starts_with("package") {
-            true => child.strip_prefix("package").unwrap(),
-            false => child,
+        let child = if child.starts_with("package") {
+            child.strip_prefix("package").unwrap()
+        } else {
+            child
         };
         let path = parent.join(child);
         if !path.starts_with(parent) {
@@ -29,14 +30,9 @@ fn cache(name: &str, version: &str) -> PathBuf {
         path
     }
 
-    let url = format!(
-        "https://registry.npmjs.org/{name}/-/{name}-{version}.tgz",
-        name = name,
-        version = version
-    );
-    let to = PathBuf::from("tmp/refresh/1").join(name).join(version);
+    println!("fetching {:?}", url);
 
-    let response = reqwest::get(&url).unwrap();
+    let response = reqwest::get(url).unwrap();
     let ungzip = GzDecoder::new(response);
     let mut archive = Archive::new(ungzip);
     for file in archive.entries().unwrap() {
@@ -46,7 +42,7 @@ fn cache(name: &str, version: &str) -> PathBuf {
         if kind.is_pax_global_extensions() {
             break;
         }
-        let path = get_real_path(&to, &path);
+        let path = get_real_path(to.as_ref(), &path);
         debug!("{:?} {:?}", kind, path);
         if kind.is_dir() {
             fs::create_dir_all(path).unwrap();
@@ -57,8 +53,6 @@ fn cache(name: &str, version: &str) -> PathBuf {
         }
     }
     create_integrity(&to);
-
-    to
 }
 
 fn create_integrity<P: AsRef<Path>>(path: P) {
@@ -92,9 +86,13 @@ mod tests {
     fn extracts_package() {
         let p = PathBuf::from("tmp/refresh/1");
         setup(&p);
-        extract(&p, "edon-test-a", "0.0.0");
-        println!("{:?}", p.join("package.json"));
-        fs::read_to_string(p.join("package.json")).unwrap();
+        extract_tarball(
+            "https://registry.npmjs.org/edon-test-c/-/edon-test-c-1.0.0.tgz",
+            p.join("cache"),
+            p.join("output"),
+        );
+        fs::read_to_string(p.join("output").join("package.json")).unwrap();
+        fs::read_to_string(p.join("cache").join("package.json")).unwrap();
         teardown(&p);
     }
 }
