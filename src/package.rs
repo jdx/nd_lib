@@ -1,13 +1,11 @@
 extern crate env_logger;
 extern crate serde_json;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::AsRef;
 use std::fs;
 use std::fs::File;
 use std::path::{Path, PathBuf};
-use std::rc::{Rc, Weak};
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,25 +31,27 @@ impl Package {
     }
 
     pub fn validate(&self) -> Vec<Issue> {
-        fn validate_package(package: &Package, node: &Rc<PackageTree>) -> Vec<Issue> {
+        fn validate_package(root: &PackageTree, package: &Package, at: Vec<&String>) -> Vec<Issue> {
             let mut issues = vec![];
             let empty = HashMap::new();
             let deps = package.dependencies.as_ref().unwrap_or(&empty);
             for (name, version) in deps {
-                let mut node_issues: Vec<Issue> = match node.get(&name) {
+                let mut next = at.clone();
+                next.push(&name);
+                let mut node_issues: Vec<Issue> = match root.get(&name, &next) {
                     Some(dep_node) => {
                         let dep_node = &dep_node.clone();
                         let expected_version = version.clone();
                         let actual_version = dep_node.package.version.clone();
                         if expected_version != actual_version {
-                            return vec![Issue::WrongVersionInstalled{
+                            return vec![Issue::WrongVersionInstalled {
                                 package: name.clone(),
                                 expected_version,
                                 actual_version,
-                            }]
+                            }];
                         }
-                        validate_package(&node.package, dep_node)
-                    },
+                        validate_package(root, &dep_node.package, next)
+                    }
                     None => vec![Issue::PackageNotInstalled {
                         package: name.clone(),
                     }],
@@ -62,33 +62,41 @@ impl Package {
             issues
         }
 
-        fn validate_package_lock(node: &Rc<PackageTree>, lock: &PackageLock) -> Vec<Issue> {
+        fn validate_package_lock(
+            root: &PackageTree,
+            lock: &PackageLock,
+            pkg: &Package,
+            at: Vec<&String>,
+        ) -> Vec<Issue> {
             let mut issues = vec![];
-            // let deps = package.dependencies.unwrap_or(HashMap::new());
             let empty = HashMap::new();
-            let empty2 = HashMap::new();
-            let deps = node.package.dependencies.as_ref().unwrap_or(&empty);
-            let lock_deps = lock.dependencies.as_ref().unwrap_or(&empty2);
-            for name in deps.keys() {
-                issues.append(&mut match lock_deps.get(name) {
-                    Some(_) => vec![],
-                    None => vec![Issue::MissingPackageFromLock {
-                        package: name.clone(),
-                    }],
+            let deps = pkg.dependencies.as_ref().unwrap_or(&empty);
+
+            for (name, _version) in deps {
+                issues.append(&mut match root.get(name, &at) {
+                    Some(node) => match lock.get(&name, &at) {
+                        Some(_dep) => {
+                            let mut next = at.clone();
+                            next.push(&name);
+
+                            validate_package_lock(root, lock, &node.package, next.clone())
+                        }
+                        None => vec![Issue::MissingPackageFromLock {
+                            package: name.clone(),
+                        }],
+                    },
+                    None => vec![],
                 });
-            }
-            for (_name, child) in node.children.borrow().iter() {
-                issues.append(&mut validate_package_lock(&child.clone(), lock));
             }
 
             issues
         }
 
-        let root = package_file_tree(self.root.as_ref().unwrap());
         let lock = PackageLock::load(self.root.as_ref().unwrap());
+        let root = package_file_tree(self.root.as_ref().unwrap());
 
-        let mut issues = validate_package(self, &root);
-        issues.append(&mut validate_package_lock(&root, &lock));
+        let mut issues = validate_package(&root, self, vec![]);
+        issues.append(&mut validate_package_lock(&root, &lock, &self, vec![]));
 
         issues
     }
@@ -125,80 +133,105 @@ impl PackageLock {
 
         package
     }
-}
 
-#[derive(Debug)]
-pub enum Issue {
-    MissingPackageFromLock { package: String },
-    PackageNotInstalled { package: String },
-    WrongVersionInstalled { package: String, expected_version: String, actual_version: String },
-}
-
-struct PackageTree {
-    package: Package,
-    children: RefCell<HashMap<String, Rc<PackageTree>>>,
-    parent: Option<Weak<PackageTree>>,
-}
-
-impl PackageTree {
-    fn get(&self, name: &str) -> Option<Rc<PackageTree>> {
-        debug!("{:?}", name);
-        let children = self.children.borrow();
-        for (child_name, node) in children.iter() {
-            if child_name == name {
-                return Some(node.clone());
-            }
-        }
-
-        match self.parent {
-            Some(ref parent) => parent.upgrade().unwrap().get(&name),
+    fn get(&self, name: &String, at: &Vec<&String>) -> Option<&PackageLockDependency> {
+        match &self.dependencies {
+            Some(deps) => find_lock_dependency(&deps, name, &at),
             None => None,
         }
     }
 }
 
-fn package_file_tree<P: AsRef<Path>>(root: P) -> Rc<PackageTree> {
-    fn package_file_tree<P: AsRef<Path>>(
-        root: P,
-        parent: Option<Weak<PackageTree>>,
-    ) -> Rc<PackageTree> {
-        let root = root.as_ref();
-        let node = Rc::new(PackageTree {
-            package: Package::load(root),
-            children: RefCell::new(HashMap::new()),
-            parent,
-        });
-        let files = match fs::read_dir(root.join("node_modules")) {
-            Ok(files) => files.collect(),
-            Err(_) => vec![],
-        };
-        let packages = files
-            .into_iter()
-            .map(|f| f.unwrap().path())
-            .filter(|f| f.is_dir())
-            .map(|d| {
-                if d.file_name().unwrap().to_str().unwrap().starts_with('@') {
-                    fs::read_dir(d)
-                        .unwrap()
-                        .into_iter()
-                        .map(|f| f.unwrap().path())
-                        .filter(|f| f.is_dir())
-                        .collect()
-                } else {
-                    vec![d]
-                }
-            }).flatten();
-        for pkg in packages {
-            let child = package_file_tree(pkg, Some(Rc::downgrade(&node)));
-            node.children
-                .borrow_mut()
-                .insert(child.package.name.clone(), child);
+fn find_lock_dependency<'a>(
+    deps: &'a HashMap<String, PackageLockDependency>,
+    name: &String,
+    at: &Vec<&String>,
+) -> Option<&'a PackageLockDependency> {
+    if at.len() > 0 {
+        let next = at[0];
+        let at = &at[1..].to_vec();
+        match deps.get(next) {
+            Some(lock) => match &lock.dependencies {
+                Some(deps) => return find_lock_dependency(deps, name, at),
+                None => (),
+            },
+            None => (),
         }
-
-        node
     }
 
-    package_file_tree(root, None)
+    deps.get(name)
+}
+
+#[derive(Debug)]
+pub enum Issue {
+    MissingPackageFromLock {
+        package: String,
+    },
+    PackageNotInstalled {
+        package: String,
+    },
+    WrongVersionInstalled {
+        package: String,
+        expected_version: String,
+        actual_version: String,
+    },
+}
+
+struct PackageTree {
+    package: Package,
+    children: HashMap<String, PackageTree>,
+}
+
+impl PackageTree {
+    fn get(&self, name: &str, at: &Vec<&String>) -> Option<&PackageTree> {
+        if at.len() > 0 {
+            let next = at[0];
+            let at = &at[1..].to_vec();
+            match self.children.get(next) {
+                Some(child) => match child.get(name, at) {
+                    Some(node) => return Some(node),
+                    None => (),
+                },
+                None => (),
+            }
+        }
+
+        self.children.get(name)
+    }
+}
+
+fn package_file_tree<P: AsRef<Path>>(root: P) -> PackageTree {
+    let root = root.as_ref();
+    let mut node = PackageTree {
+        package: Package::load(root),
+        children: HashMap::new(),
+    };
+    let files = match fs::read_dir(root.join("node_modules")) {
+        Ok(files) => files.collect(),
+        Err(_) => vec![],
+    };
+    let packages = files
+        .into_iter()
+        .map(|f| f.unwrap().path())
+        .filter(|f| f.is_dir())
+        .map(|d| {
+            if d.file_name().unwrap().to_str().unwrap().starts_with('@') {
+                fs::read_dir(d)
+                    .unwrap()
+                    .into_iter()
+                    .map(|f| f.unwrap().path())
+                    .filter(|f| f.is_dir())
+                    .collect()
+            } else {
+                vec![d]
+            }
+        }).flatten();
+    for pkg in packages {
+        let child = package_file_tree(pkg);
+        node.children.insert(child.package.name.clone(), child);
+    }
+
+    node
 }
 
 #[cfg(test)]
@@ -254,7 +287,6 @@ mod tests {
         assert_eq!(tree.package.name, "example");
         assert_eq!(
             tree.children
-                .borrow()
                 .get("edon-test-a")
                 .unwrap()
                 .package
@@ -263,23 +295,12 @@ mod tests {
         );
         assert_eq!(
             tree.children
-                .borrow()
                 .get("edon-test-a")
                 .unwrap()
                 .package
                 .version,
             "0.0.1"
         );
-    }
-    #[test]
-    fn dep_not_installed() {
-        let p = Package::load("fixtures/dep-not-installed");
-        let issues = p.validate();
-        match &issues[0] {
-            Issue::PackageNotInstalled { ref package } => assert_eq!(package, "edon-test-c"),
-            _ => panic!("invalid issue"),
-        }
-        assert_eq!(issues.len(), 1);
     }
     #[test]
     fn wrong_package_installed_1() {
@@ -291,6 +312,22 @@ mod tests {
                 assert_eq!(expected_version, "0.0.0");
                 assert_eq!(actual_version, "0.0.1");
             }
+            _ => panic!("invalid issue"),
+        }
+        assert_eq!(issues.len(), 1);
+    }
+    #[test]
+    fn valid_multiple_versions() {
+        let p = Package::load("fixtures/2-valid-multiple-versions");
+        let issues = p.validate();
+        assert_eq!(issues.len(), 0);
+    }
+    #[test]
+    fn dep_not_installed_3() {
+        let p = Package::load("fixtures/3-dep-not-installed");
+        let issues = p.validate();
+        match &issues[0] {
+            Issue::PackageNotInstalled { ref package } => assert_eq!(package, "edon-test-c"),
             _ => panic!("invalid issue"),
         }
         assert_eq!(issues.len(), 1);
