@@ -2,6 +2,9 @@
 name = "nd_lib"
 version = "0.1.0"
 authors = ["Jeff Dickey <@jdxcode>"]
+license = "MIT"
+repository = "https://github.com/jdxcode/nd_lib"
+description = "library for nd"
 
 [dependencies]
 serde = "1.0.79"
