@@ -9,21 +9,29 @@ use serde_json;
 use std::collections::HashMap;
 use Package;
 use std::path::PathBuf;
+use std::iter::Iterator;
+use std::option::Option;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Deserialize)]
+#[derive(Debug, Clone)]
 struct RegistryPackage {
-    // name: String,
+    name: String,
     versions: HashMap<String, RegistryPackageVersion>,
 }
 
 #[derive(Deserialize)]
+#[derive(Debug, Clone)]
 struct RegistryPackageVersion {
-    // name: String,
-    // version: String,
+    name: String,
+    version: String,
     dist: RegistryPackageVersionDist,
+    dependencies: Option<HashMap<String, String>>,
 }
 
 #[derive(Deserialize)]
+#[derive(Debug, Clone)]
 struct RegistryPackageVersionDist {
     // integrity: String,
     tarball: String,
@@ -36,7 +44,9 @@ pub fn refresh(pkg: &Package) {
     deps.into_par_iter().for_each(|(name, semver_range)| {
         let root = root.join("node_modules").join(name);
         let metadata = get_metadata(name);
-        let version = get_actual_version(&metadata, semver_range);
+        let range = VersionReq::parse(semver_range).unwrap();
+        let versions: Vec<&String> = metadata.versions.keys().collect();
+        let version = get_max_compatible_version(&range, &versions);
         let m_version = &metadata.versions[&version];
         extract_tarball(&m_version.dist.tarball, root, PathBuf::from("tmp").join(name).join(version))
     });
@@ -50,31 +60,39 @@ fn get_metadata(name: &str) -> RegistryPackage {
     serde_json::from_reader(response).unwrap()
 }
 
-fn get_actual_version(metadata: &RegistryPackage, semver_range: &str) -> String {
-    let semver_range = VersionReq::parse(semver_range).unwrap();
-    let mut versions: Vec<Version> = metadata
-        .versions
-        .keys()
+fn get_max_compatible_version(range: &VersionReq, versions: &Vec<&String>) -> String {
+    let mut versions: Vec<Version> = versions.iter()
         .map(|v| Version::parse(v).unwrap())
-        .filter(|v| semver_range.matches(&v))
+        .filter(|v| range.matches(&v))
         .collect();
     versions.sort_unstable();
-    println!("done");
 
     versions.last().unwrap().to_string()
+}
+
+fn fetch_all_metadata(name: &str, r: &VersionReq) -> Rc<RefCell<HashMap<String, RegistryPackage>>> {
+    fn fetch(name: &str, r: &VersionReq, map: Rc<RefCell<HashMap<String, RegistryPackage>>>) {
+        let m = get_metadata(name);
+        map.borrow_mut().insert(name.to_owned(), m.clone());
+        // let m = map.get(name).unwrap().clone();
+        let versions: Vec<&String> = m.versions.keys().collect();
+        let latest_version = get_max_compatible_version(&r, &versions);
+        let versions = m.versions.get(&latest_version).unwrap();
+        let empty = HashMap::new();
+        for (n, v) in versions.clone().dependencies.unwrap_or(empty) {
+            fetch(&n, &VersionReq::parse(&v).unwrap(), map.clone());
+        }
+    }
+    let map = Rc::new(RefCell::new(HashMap::new()));
+    fetch(name, r, map.clone());
+
+    map
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
-
-    #[test]
-    fn test_get_actual_version() {
-        let metadata = get_metadata("edon-test-c");
-        let version = get_actual_version(&metadata, "^1.0.0");
-        assert_eq!(version, "1.0.4");
-    }
     #[test]
     fn test_installs_subdeps_4() {
         let t = PathBuf::from("fixtures/4-installs-subdeps");
@@ -84,5 +102,14 @@ mod tests {
         assert_eq!(Package::load(&t.join("node_modules/edon-test-c")).version, "1.0.4");
         assert_eq!(Package::load(&t.join("node_modules/edon-test-a")).version, "0.0.1");
         // assert_eq!(Package::load(&t.join("node_modules/edon-test-a/node_modules/edon-test-c")).version, "0.0.0");
+    }
+    #[test]
+    fn test_fetch_all_metadata() {
+        let m = fetch_all_metadata("edon-test-a", &VersionReq::parse("^0.0.1").unwrap());
+        for (_, i) in m.borrow().iter() {
+            println!("{:?}", i.name);
+        }
+        assert_eq!(m.borrow().get("edon-test-a").unwrap().versions.get("0.0.0").unwrap().version, "0.0.0");
+        assert_eq!(m.borrow().get("edon-test-b").unwrap().versions.get("0.0.0").unwrap().version, "0.0.0");
     }
 }
